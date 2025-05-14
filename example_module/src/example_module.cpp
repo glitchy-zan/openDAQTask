@@ -3,9 +3,11 @@
 #include <example_module/example_fb.h>
 #include <example_module/example_module.h>
 #include <example_module/version.h>
+#include <example_module/example_iir_filter_fb.h>
 
 BEGIN_NAMESPACE_EXAMPLE_MODULE
 
+// modules ID card
 ExampleModule::ExampleModule(ContextPtr context)
     : Module("ReferenceFunctionBlockModule",
              VersionInfo(EXAMPLE_MODULE_MAJOR_VERSION, EXAMPLE_MODULE_MINOR_VERSION, EXAMPLE_MODULE_PATCH_VERSION),
@@ -14,6 +16,7 @@ ExampleModule::ExampleModule(ContextPtr context)
 {
 }
 
+// returns list of modules it has
 DictPtr<IString, IFunctionBlockType> ExampleModule::onGetAvailableFunctionBlockTypes()
 {
     auto types = Dict<IString, IFunctionBlockType>();
@@ -21,9 +24,13 @@ DictPtr<IString, IFunctionBlockType> ExampleModule::onGetAvailableFunctionBlockT
     const auto typeScaling = ExampleFBImpl::CreateType();
     types.set(typeScaling.getId(), typeScaling);
 
+    const auto typeIIR = ExampleFBImplIIR::CreateType();
+    types.set(typeIIR.getId(), typeIIR);
+
     return types;
 }
 
+// creates FB
 FunctionBlockPtr ExampleModule::onCreateFunctionBlock(const StringPtr& id,
                                                       const ComponentPtr& parent,
                                                       const StringPtr& localId,
@@ -32,6 +39,12 @@ FunctionBlockPtr ExampleModule::onCreateFunctionBlock(const StringPtr& id,
     if (id == ExampleFBImpl::CreateType().getId())
     {
         FunctionBlockPtr fb = createWithImplementation<IFunctionBlock, ExampleFBImpl>(context, parent, localId);
+        return fb;
+    }
+
+    if (id == ExampleFBImplIIR::CreateType().getId())
+    {
+        FunctionBlockPtr fb = createWithImplementation<IFunctionBlock, ExampleFBImplIIR>(context, parent, localId);
         return fb;
     }
 

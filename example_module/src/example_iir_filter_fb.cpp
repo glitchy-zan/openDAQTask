@@ -1,9 +1,11 @@
-#include <example_module/example_fb.h>
+#define _USE_MATH_DEFINES
 #include <example_module/dispatch.h>
+#include </Users/akasi/Desktop/OpenDAQ/repos/example_module/include/example_module/example_iir_filter_fb.h>
 #include <opendaq/event_packet_params.h>
+#include <cmath>
 
 BEGIN_NAMESPACE_EXAMPLE_MODULE
-    ExampleFBImpl::ExampleFBImpl(const ContextPtr& ctx, const ComponentPtr& parent, const StringPtr& localId)
+ExampleFBImplIIR::ExampleFBImplIIR(const ContextPtr& ctx, const ComponentPtr& parent, const StringPtr& localId)
     : FunctionBlock(CreateType(), ctx, parent, localId)
 {
     initComponentStatus();
@@ -12,16 +14,13 @@ BEGIN_NAMESPACE_EXAMPLE_MODULE
     initProperties();
 }
 
-void ExampleFBImpl::initProperties()
+// initialization stuff
+void ExampleFBImplIIR::initProperties()
 {
-    const auto scaleProp = FloatProperty("Scale", 1.0);
-    objPtr.addProperty(scaleProp);
-    objPtr.getOnPropertyValueWrite("Scale") +=
-        [this](PropertyObjectPtr& obj, PropertyValueEventArgsPtr& args) { propertyChanged(true); };
-
-    const auto offsetProp = FloatProperty("Offset", 0.0);
-    objPtr.addProperty(offsetProp);
-    objPtr.getOnPropertyValueWrite("Offset") +=
+    // cut off freq
+    const auto cutoffProp = FloatProperty("CutoffFrequency", 100.0);
+    objPtr.addProperty(cutoffProp);
+    objPtr.getOnPropertyValueWrite("CutoffFrequency") +=
         [this](PropertyObjectPtr& obj, PropertyValueEventArgsPtr& args) { propertyChanged(true); };
 
     const auto useCustomOutputRangeProp = BoolProperty("UseCustomOutputRange", False);
@@ -52,17 +51,17 @@ void ExampleFBImpl::initProperties()
     readProperties();
 }
 
-void ExampleFBImpl::propertyChanged(bool configure)
+void ExampleFBImplIIR::propertyChanged(bool configure)
 {
     readProperties();
     if (configure)
         this->configure();
 }
 
-void ExampleFBImpl::readProperties()
+void ExampleFBImplIIR::readProperties()
 {
-    scale = objPtr.getPropertyValue("Scale");
-    offset = objPtr.getPropertyValue("Offset");
+    // cut off freq
+    cutoffFrequency = objPtr.getPropertyValue("CutoffFrequency");
     useCustomOutputRange = objPtr.getPropertyValue("UseCustomOutputRange");
     outputHighValue = objPtr.getPropertyValue("OutputHighValue");
     outputLowValue = objPtr.getPropertyValue("OutputLowValue");
@@ -70,13 +69,12 @@ void ExampleFBImpl::readProperties()
     outputName = static_cast<std::string>(objPtr.getPropertyValue("OutputName"));
 }
 
-FunctionBlockTypePtr ExampleFBImpl::CreateType()
+FunctionBlockTypePtr ExampleFBImplIIR::CreateType()
 {
-    return FunctionBlockType("ExampleScalingModule", "Scaling", "Signal scaling");
+    return FunctionBlockType("ExampleIIRFilter", "IIR", "IIR Filter");
 }
 
-void ExampleFBImpl::processSignalDescriptorChanged(const DataDescriptorPtr& dataDescriptor,
-                                                   const DataDescriptorPtr& domainDescriptor)
+void ExampleFBImplIIR::processSignalDescriptorChanged(const DataDescriptorPtr& dataDescriptor, const DataDescriptorPtr& domainDescriptor)
 {
     if (dataDescriptor.assigned())
         this->inputDataDescriptor = dataDescriptor;
@@ -86,8 +84,8 @@ void ExampleFBImpl::processSignalDescriptorChanged(const DataDescriptorPtr& data
     configure();
 }
 
-// Validates input signals and prepares output signal format
-void ExampleFBImpl::configure()
+// validates signal
+void ExampleFBImplIIR::configure()
 {
     try
     {
@@ -107,22 +105,17 @@ void ExampleFBImpl::configure()
         }
 
         inputSampleType = inputDataDescriptor.getSampleType();
-        if (inputSampleType != SampleType::Float64 &&
-            inputSampleType != SampleType::Float32 &&
-            inputSampleType != SampleType::Int8 &&
-            inputSampleType != SampleType::Int16 &&
-            inputSampleType != SampleType::Int32 &&
-            inputSampleType != SampleType::Int64 &&
-            inputSampleType != SampleType::UInt8 &&
-            inputSampleType != SampleType::UInt16 &&
-            inputSampleType != SampleType::UInt32 &&
+        if (inputSampleType != SampleType::Float64 && inputSampleType != SampleType::Float32 && inputSampleType != SampleType::Int8 &&
+            inputSampleType != SampleType::Int16 && inputSampleType != SampleType::Int32 && inputSampleType != SampleType::Int64 &&
+            inputSampleType != SampleType::UInt8 && inputSampleType != SampleType::UInt16 && inputSampleType != SampleType::UInt32 &&
             inputSampleType != SampleType::UInt64)
         {
             throw std::runtime_error("Invalid sample type");
         }
 
         // Accept only synchronous (linear implicit) domain signals
-        if (inputDomainDataDescriptor.getSampleType() != SampleType::Int64 && inputDomainDataDescriptor.getSampleType() != SampleType::UInt64)
+        if (inputDomainDataDescriptor.getSampleType() != SampleType::Int64 &&
+            inputDomainDataDescriptor.getSampleType() != SampleType::UInt64)
         {
             throw std::runtime_error("Incompatible domain data sample type");
         }
@@ -139,6 +132,38 @@ void ExampleFBImpl::configure()
             throw std::runtime_error("Domain rule must be linear");
         }
 
+        // filter stuff
+        /************************************************************************************************/
+        // Get sample rate from existing code
+        sampleRate = reader::getSampleRate(inputDomainDataDescriptor);
+
+        // Validate sample rate first
+        if (sampleRate <= 0)
+            throw std::runtime_error("Invalid sample rate");
+
+        // Validate cutoff frequency
+        double fc = cutoffFrequency;
+        if (fc <= 0.0 || fc >= sampleRate / 2.0)
+            throw std::runtime_error("Cutoff frequency must be between 0 and Nyquist frequency");
+
+        // Calculate Butterworth coefficients (2nd order)
+        const double theta_c = 2.0 * M_PI * fc / sampleRate;
+        const double C = 1.0 / tan(theta_c / 2.0);
+        const double C_squared = C * C;
+        const double sqrt2_C = std::sqrt(2.0) * C;
+        const double a0 = C_squared + sqrt2_C + 1.0;
+
+        b0 = 1.0 / a0;
+        b1 = 2.0 * b0;
+        b2 = b0;
+        a1 = 2.0 * (1.0 - C_squared) / a0;
+        a2 = (C_squared - sqrt2_C + 1.0) / a0;
+
+        // Reset filter state between configurations
+        filterState = FilterState();
+
+        /************************************************************************************************/
+
         RangePtr outputRange;
         if (useCustomOutputRange)
         {
@@ -146,22 +171,16 @@ void ExampleFBImpl::configure()
         }
         else
         {
-            auto outputHigh = scale * static_cast<Float>(inputDataDescriptor.getValueRange().getLowValue()) + offset;
-            auto outputLow = scale * static_cast<Float>(inputDataDescriptor.getValueRange().getHighValue()) + offset;
-            if (outputLow > outputHigh)
-                std::swap(outputLow, outputHigh);
-
-            outputRange = Range(outputLow, outputHigh);
+            // Now uses raw input range instead of scaled values
+            const auto inputHigh = static_cast<Float>(inputDataDescriptor.getValueRange().getHighValue());
+            const auto inputLow = static_cast<Float>(inputDataDescriptor.getValueRange().getLowValue());
+            outputRange = Range(inputLow, inputHigh);
         }
 
         auto name = outputName.empty() ? inputPort.getSignal().getName().toStdString() + "/Scaled" : outputName;
         auto unit = outputUnit.empty() ? inputDataDescriptor.getUnit() : Unit(outputUnit);
 
-        outputDataDescriptor = DataDescriptorBuilder()
-                               .setSampleType(SampleType::Float64)
-                               .setValueRange(outputRange)
-                               .setUnit(unit)
-                               .build();
+        outputDataDescriptor = DataDescriptorBuilder().setSampleType(SampleType::Float64).setValueRange(outputRange).setUnit(unit).build();
         outputDomainDataDescriptor = inputDomainDataDescriptor;
 
         outputSignal.setDescriptor(outputDataDescriptor);
@@ -169,7 +188,6 @@ void ExampleFBImpl::configure()
         outputDomainSignal.setDescriptor(inputDomainDataDescriptor);
 
         // Allocate 1s buffer
-        sampleRate = reader::getSampleRate(inputDomainDataDescriptor);
         inputData.resize(sampleRate);
         inputDomainData.resize(sampleRate);
 
@@ -177,15 +195,15 @@ void ExampleFBImpl::configure()
     }
     catch (const std::exception& e)
     {
-        setComponentStatusWithMessage(ComponentStatus::Error, fmt::format("Failed to set descriptor for output signal: {}", e.what()));
+        setComponentStatusWithMessage(ComponentStatus::Error, fmt::format("Configuration error: {}", e.what()));
         outputSignal.setDescriptor(nullptr);
         configValid = false;
     }
-
     configValid = true;
 }
 
-void ExampleFBImpl::calculate()
+// preproc
+void ExampleFBImplIIR::calculate()
 {
     auto lock = this->getAcquisitionLock();
 
@@ -209,8 +227,8 @@ void ExampleFBImpl::calculate()
     }
 }
 
-// Applies scale * input + offset to every sample
-void ExampleFBImpl::processData(SizeT readAmount, SizeT packetOffset) const
+// proc
+void ExampleFBImplIIR::processData(SizeT readAmount, SizeT packetOffset)
 {
     if (readAmount == 0)
         return;
@@ -219,14 +237,29 @@ void ExampleFBImpl::processData(SizeT readAmount, SizeT packetOffset) const
     const auto outputPacket = DataPacketWithDomain(outputDomainPacket, outputDataDescriptor, readAmount);
     auto outputData = static_cast<Float*>(outputPacket.getRawData());
 
+    // filter implementation
     for (size_t i = 0; i < readAmount; i++)
-        *outputData++ = scale * static_cast<Float>(inputData[i]) + offset;
+    {
+        double inputSample = static_cast<double>(inputData[i]);
+
+        // Apply IIR filter
+        double outputSample =
+            b0 * inputSample + b1 * filterState.x_prev1 + b2 * filterState.x_prev2 - a1 * filterState.y_prev1 - a2 * filterState.y_prev2;
+
+        // Update filter state
+        filterState.x_prev2 = filterState.x_prev1;
+        filterState.x_prev1 = inputSample;
+        filterState.y_prev2 = filterState.y_prev1;
+        filterState.y_prev1 = outputSample;
+
+        *outputData++ = outputSample;
+    }
 
     outputSignal.sendPacket(outputPacket);
     outputDomainSignal.sendPacket(outputDomainPacket);
 }
 
-void ExampleFBImpl::processEventPacket(const EventPacketPtr& packet)
+void ExampleFBImplIIR::processEventPacket(const EventPacketPtr& packet)
 {
     if (packet.getEventId() == event_packet_id::DATA_DESCRIPTOR_CHANGED)
     {
@@ -236,16 +269,16 @@ void ExampleFBImpl::processEventPacket(const EventPacketPtr& packet)
     }
 }
 
-// Creates the port where input signals connect
-void ExampleFBImpl::createInputPorts()
+// initialization stuff
+void ExampleFBImplIIR::createInputPorts()
 {
     inputPort = createAndAddInputPort("Input", PacketReadyNotification::Scheduler);
     reader = StreamReaderFromPort(inputPort, SampleType::Float32, SampleType::UInt64);
-    reader.setOnDataAvailable([this] { calculate();});
+    reader.setOnDataAvailable([this] { calculate(); });
 }
 
-// Creates output signals that other FBs/devices can connect to
-void ExampleFBImpl::createSignals()
+// initialization stuff
+void ExampleFBImplIIR::createSignals()
 {
     outputSignal = createAndAddSignal("Scaled");
     outputDomainSignal = createAndAddSignal("ScaledTime", nullptr, false);

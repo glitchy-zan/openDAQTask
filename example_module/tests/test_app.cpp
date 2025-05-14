@@ -5,7 +5,7 @@
 #include <coretypes/stringobject_factory.h>
 
 
-int main(int argc, char** args)
+int main(int argc, const char* argv[])
 {
     daq::daqInitializeCoreObjectsTesting();
     daqInitModuleManagerLibrary();
